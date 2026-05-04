@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
-
 import com.amangupta.spendo.data.AppDatabase
 import com.amangupta.spendo.data.CategorizationEngine
 import com.amangupta.spendo.data.Transaction
@@ -14,38 +13,54 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class SmsReceiver : BroadcastReceiver() {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    companion object { private const val TAG = "SmsReceiver" }
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Telephony.Sms.Intents.SMS_RECEIVED_ACTION) {
-            val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
-            for (message in messages) {
-                val body = message.messageBody
-                val sender = message.displayOriginatingAddress
-                Log.d("SmsReceiver", "From: $sender, Body: $body")
-                
-                val parsed = SmsParser.parse(body)
-                if (parsed != null) {
-                    Log.d("SmsReceiver", "Parsed: $parsed")
-                    saveTransaction(context, parsed, body)
-                }
-            }
-        }
-    }
+        if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
 
-    private fun saveTransaction(context: Context, parsed: SmsParser.ParsedTransaction, rawBody: String) {
-        val db = AppDatabase.getDatabase(context)
-        scope.launch {
-            val result = CategorizationEngine.categorize(parsed.merchant, db.categoryRuleDao())
-            val transaction = Transaction(
-                amount = parsed.amount,
-                merchant = result.name,
-                category = result.category,
-                timestamp = System.currentTimeMillis(),
-                rawMessage = rawBody
-            )
-            db.transactionDao().insert(transaction)
-            Log.d("SmsReceiver", "Transaction saved: $transaction")
+        val messages = Telephony.Sms.Intents.getMessagesFromIntent(intent)
+        val fullSms = messages.joinToString("") { it.messageBody }
+
+        if (!SmsParser.isUpiDebit(fullSms)) return
+
+        val parsed = SmsParser.parse(fullSms) ?: run {
+            Log.w(TAG, "Parse failed for UPI SMS")
+            return
+        }
+
+        // goAsync keeps the receiver alive until finish() is called
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = AppDatabase.getDatabase(context)
+                val ts = System.currentTimeMillis()
+
+                // Duplicate check
+                if (db.transactionDao().countDuplicates(parsed.merchantVpa, parsed.amount, ts) > 0) {
+                    Log.d(TAG, "Duplicate skipped: ${parsed.merchantVpa}")
+                    return@launch
+                }
+
+                val result = CategorizationEngine.categorize(
+                    parsed.merchantVpa, parsed.merchantName, db.categoryRuleDao()
+                )
+                db.transactionDao().insert(
+                    Transaction(
+                        amount = parsed.amount,
+                        merchantVpa = parsed.merchantVpa,
+                        merchant = result.name,
+                        category = result.category,
+                        timestamp = ts,
+                        rawMessage = fullSms,
+                        bankRef = parsed.bankRef
+                    )
+                )
+                Log.d(TAG, "Saved ₹${parsed.amount} → ${result.name} [${result.category}]")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving transaction", e)
+            } finally {
+                pendingResult.finish()
+            }
         }
     }
 }

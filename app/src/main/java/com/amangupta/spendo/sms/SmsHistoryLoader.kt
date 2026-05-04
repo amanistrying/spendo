@@ -38,19 +38,28 @@ object SmsHistoryLoader {
                     val body = cursor.getString(bodyIndex)
                     val timestamp = cursor.getLong(dateIndex)
 
-                    val parsed = SmsParser.parse(body)
-                    if (parsed != null) {
-                        val result = CategorizationEngine.categorize(parsed.merchant, categoryRuleDao)
-                        val transaction = Transaction(
+                    val parsed = SmsParser.parse(body) ?: continue
+                    
+                    if (transactionDao.countDuplicates(parsed.merchantVpa, parsed.amount, timestamp) > 0) {
+                        Log.d("SmsHistoryLoader", "Duplicate skipped: ${parsed.merchantVpa}")
+                        continue
+                    }
+
+                    val result = CategorizationEngine.categorize(
+                        parsed.merchantVpa, parsed.merchantName, categoryRuleDao
+                    )
+                    transactionDao.insert(
+                        Transaction(
                             amount = parsed.amount,
+                            merchantVpa = parsed.merchantVpa,
                             merchant = result.name,
                             category = result.category,
                             timestamp = timestamp,
-                            rawMessage = body
+                            rawMessage = body,
+                            bankRef = parsed.bankRef
                         )
-                        transactionDao.insert(transaction)
-                        Log.d("SmsHistoryLoader", "Restored: ${parsed.amount} at $timestamp")
-                    }
+                    )
+                    Log.d("SmsHistoryLoader", "Restored: ${parsed.amount} at $timestamp")
                 }
             }
         }
