@@ -20,17 +20,35 @@ interface TransactionDao {
     @Query("SELECT category, SUM(amount) as total FROM transactions GROUP BY category")
     fun getSpendingByCategory(): Flow<List<CategorySpending>>
 
-    @Query("SELECT rawMessage FROM transactions WHERE category = 'Unknown' GROUP BY rawMessage")
-    fun getUnknownRawMessages(): Flow<List<String>>
+    @Query("SELECT DISTINCT merchantVpa, merchant FROM transactions WHERE category = 'Unknown'")
+    fun getUnknownTransactionMerchants(): Flow<List<UnknownMerchant>>
 
-    @Query("UPDATE transactions SET merchant = :merchant, category = :category WHERE rawMessage = :rawMessage")
-    suspend fun updateTransactionByRawMessage(rawMessage: String, merchant: String, category: String)
+    @Query("UPDATE transactions SET merchant = :merchant, category = :category WHERE merchantVpa = :merchantVpa")
+    suspend fun updateTransactionByVpa(merchantVpa: String, merchant: String, category: String)
+
+    @Query("UPDATE transactions SET merchant = :name, category = :category WHERE id = :id")
+    suspend fun updateCategoryById(id: Long, name: String, category: String)
+
+    @Query("""
+        SELECT COUNT(*) FROM transactions 
+        WHERE merchantVpa = :vpa AND amount = :amount
+        AND timestamp BETWEEN :ts - 60000 AND :ts + 60000
+    """)
+    suspend fun countDuplicates(vpa: String, amount: Double, ts: Long): Int
+
+    @Query("SELECT * FROM transactions WHERE category = :category ORDER BY timestamp DESC")
+    fun getByCategory(category: String): Flow<List<Transaction>>
+
+    @Query("SELECT * FROM transactions WHERE merchant LIKE '%' || :query || '%' OR merchantVpa LIKE '%' || :query || '%' ORDER BY timestamp DESC")
+    fun search(query: String): Flow<List<Transaction>>
 }
 
 data class CategorySpending(
     val category: String,
     val total: Double
 )
+
+data class UnknownMerchant(val merchantVpa: String, val merchant: String)
 
 @Dao
 interface CategoryDao {
